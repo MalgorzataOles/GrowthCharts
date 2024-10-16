@@ -20,7 +20,7 @@ __Key Features__
 
 ### __Input__
 
-The input data should follow the template structure. The template is located in: (`data/measurement_template.xlsx`).
+The input data should follow the template structure. The template is located in: (`data/measurements_template.xlsx`).
 
 ---
 
