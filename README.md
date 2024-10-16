@@ -1,4 +1,4 @@
-# GrowthCharts\
+# GrowthCharts
 _interactive tool for visualizing growth curves_
 
 ---

@@ -1,46 +1,15 @@
+# Author: Dr. Malgorzata Oles
+
 library(shiny)
 library(ggplot2)
 library(reshape2)
-library(readxl)
 library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+library(readxl)
 
-# Create the temporary data frame 'tmp' to use in growth_data
-tmp <- data.frame(
-  Age = seq(84, 216, by = 12),  # Age in months
-  L = c(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
-  M = c(124.5763, 130.5084, 136.2700, 141.4685, 146.7490, 152.9406,
-        160.2044, 167.2116, 172.4996, 175.7266, 177.6036, 178.6756),
-  S = c(0.0407, 0.0422, 0.0441, 0.0457, 0.0473, 0.0499, 0.0511,
-        0.0481, 0.043, 0.0392, 0.037, 0.0357)
-)
-
-# Define growth_data as specified
-growth_data = list(
-  "WHO"=list(
-    Male=list(
-      Height=tmp,
-      Weight=tmp,
-      BMI=tmp
-    ),
-    Female=list(
-      Height=tmp,
-      Weight=tmp,
-      BMI=tmp
-    )
-  ),
-  "Poland 2000"=list(
-    Male=list(
-      Height=tmp,
-      Weight=tmp,
-      BMI=tmp
-    ),
-    Female=list(
-      Height=tmp,
-      Weight=tmp,
-      BMI=tmp
-    )
-  )
-)
+# load growth data
+source("R/readGrowthStandards.R")
 
 # Z-scores for the desired percentiles
 percentiles <- c(0.03, 0.1, 0.25, 0.5, 0.75, 0.9, 0.97)
@@ -52,12 +21,15 @@ calculate_growth_curve <- function(L, M, S, Z) {
 }
 
 # Define distinct colors for percentiles
-percentile_colors <- c("P3" = "red", "P10" = "orange", "P25" = "yellow", 
-                       "P50" = "blue", "P75" = "green", "P90" = "purple", 
-                       "P97" = "pink")
+percentiles <- c(0.03, 0.1, 0.25, 0.5, 0.75, 0.9, 0.97)
+colors_percentiles <- c("P3" = "grey70", "P10" = "grey90", "P25" = "grey90", 
+                       "P50" = "grey50", "P75" = "grey90", "P90" = "grey90", 
+                       "P97" = "grey70")
 
-# UI for Shiny app
-ui <- fluidPage(
+#============================================================================
+# ui
+#============================================================================
+ui = fluidPage(
   titlePanel("Growth Curve App"),
   sidebarLayout(
     sidebarPanel(
@@ -74,129 +46,207 @@ ui <- fluidPage(
   )
 )
 
-# Server logic for Shiny app
-server <- function(input, output, session) {
+#============================================================================
+# server
+#============================================================================
+server = function(input, output, session) {
   
-  # Reactive value to store colors for people
-  colors <- reactiveVal(NULL)
-  
-  # Function to update checkbox group based on the "General" sheet and selected sex
-  update_people_choices <- function(general_data) {
-    # Filter names based on the selected sex
-    people_choices <- general_data$Name[general_data$Sex == input$sex & 
-                                          general_data$Name %in% excel_sheets(input$file$datapath)]
-    updateCheckboxGroupInput(session, "people", choices = people_choices)
+  # Reactive to load the Excel file and read the data
+  data_input = reactive({
+    req(input$file)
     
-    # Generate distinct colors for each person
-    color_palette <- RColorBrewer::brewer.pal(length(people_choices), "Set1")
-    color_mapping <- setNames(color_palette, people_choices)
-    colors(color_mapping)  # Update the reactive value
-  }
+    # Read the excel file
+    file_data = readxl::excel_sheets(input$file$datapath)
+    general_data = readxl::read_excel(input$file$datapath, sheet = "General")
+    
+    # List the people available based on sex selection
+    available_people = general_data$Name[general_data$Sex == input$sex]
+    
+    # Get only the sheets that match the people names
+    valid_people = available_people[available_people %in% file_data]
+    
+    # Debugging output
+    print(paste("Valid People:", paste(valid_people, collapse = ", ")))
+    
+    # Update checkbox group with valid people
+    updateCheckboxGroupInput(session, "people", choices=valid_people,
+                             selected=valid_people)
+    
+    # Read the individual measurement data for valid people
+    people_data = lapply(valid_people, function(person) {
+      person_data = readxl::read_excel(input$file$datapath, sheet=person)
+      
+      # Calculate age based on Birthday from the General sheet
+      birthday = as.Date(general_data$Birthday[general_data$Name == person],
+                         format = "%d.%m.%Y")
+      person_data$Age = as.numeric(difftime(
+        person_data$Date, birthday, units="days")) / 365.25  # Convert to years
+      
+      return(person_data)
+    })
+    
+    names(people_data) = valid_people
+    return(people_data)
+  })
   
-  # Observe when a file is uploaded
+  # Observe changes to the file input and update checkboxes
   observeEvent(input$file, {
-    req(input$file)  # Ensure a file has been uploaded
+    req(input$file)
+    data_input()  # This will trigger the data reading process
     
-    # Read the Excel file
-    general_data <- read_excel(input$file$datapath, sheet = "General")  # Read the "General" sheet
+    general_data = readxl::read_excel(input$file$datapath, sheet = "General")
+    available_people = general_data$Name[general_data$Sex == input$sex]
     
-    # Initial update of checkbox group based on the uploaded file
-    update_people_choices(general_data)
+    # Ensure that file_data is obtained correctly
+    file_data = readxl::excel_sheets(input$file$datapath)
+    valid_people = available_people[available_people %in% file_data]
+    
+    # Debugging output
+    print(paste("Available People:", paste(available_people, collapse=", ")))
+    print(paste("Valid People after file check:",paste(valid_people, collapse=", ")))
+    
+    updateCheckboxGroupInput(session, "people",
+                             choices=valid_people, selected=valid_people)
   })
   
-  # Observe changes in the radio button for sex
-  observeEvent(input$sex, {
-    req(input$file)  # Ensure a file has been uploaded before filtering
-    general_data <- read_excel(input$file$datapath, sheet = "General")  # Read the "General" sheet again
-    update_people_choices(general_data)  # Update checkbox group based on selected sex
+  # Observe changes to the chart selection and dynamically update 'sex' radio buttons
+  observe({
+    selected_chart = input$chart
+    
+    req(growth_data[[selected_chart]])  # Ensure data exists for the selected chart
+    
+    available_sexes = names(growth_data[[selected_chart]])
+    
+    if (!(input$sex %in% available_sexes)) {
+      updateRadioButtons(session, "sex", choices=available_sexes, selected=available_sexes[1])
+    } else {
+      updateRadioButtons(session, "sex", choices=available_sexes, selected=input$sex)
+    }
   })
   
-  # Reactive expression to update growth curve based on age and sex
-  output$growthPlot <- renderPlot({
-    selected_data <- growth_data[[input$chart]][[input$sex]][[input$feature]]
+  # Observe changes to the sex selection and dynamically update 'feature' radio buttons
+  observe({
+    selected_chart = input$chart
+    selected_sex = input$sex
     
-    # For each Z-score, calculate the corresponding curve
-    growth_curves <- data.frame(Age = selected_data$Age / 12)  # Convert Age to years
-    for (i in seq_along(z_scores)) {
-      growth_curves[[paste0("P", percentiles[i] * 100)]] <- 
-        mapply(calculate_growth_curve, selected_data$L, selected_data$M, selected_data$S, Z = z_scores[i])
+    req(growth_data[[selected_chart]][[selected_sex]])  # Ensure data exists for the selected chart and sex
+    
+    available_features = names(growth_data[[selected_chart]][[selected_sex]])
+    
+    if (!(input$feature %in% available_features)) {
+      updateRadioButtons(session, "feature", choices=available_features,
+                         selected=available_features[1])
+    } else {
+      updateRadioButtons(session, "feature", choices=available_features,
+                         selected=input$feature)
+    }
+  })
+  
+  # Observe changes to 'chart', 'sex', or 'feature' and update the 'age' slider
+  observe({
+    selected_chart = input$chart
+    selected_sex = input$sex
+    selected_feature = input$feature
+    
+    req(growth_data[[selected_chart]][[selected_sex]][[selected_feature]])  # Ensure data exists for the selected feature
+    
+    age_data = growth_data[[selected_chart]][[selected_sex]][[selected_feature]]$Age
+    
+    # Convert the age from months to years
+    age_data_years = age_data / 12
+    
+    # Get the range of ages in years
+    min_age <- min(age_data_years, na.rm=TRUE)
+    max_age <- max(age_data_years, na.rm=TRUE)
+    
+    # Update the sliderInput for age
+    updateSliderInput(session,  
+                      "age",  
+                      min = min_age,  
+                      max = max_age,  
+                      value = c(min_age, max_age))
+  })
+  
+  # Render the plot
+  output$growthPlot = renderPlot({
+    selected_chart = input$chart
+    selected_sex = input$sex
+    selected_feature = input$feature
+    
+    req(growth_data[[selected_chart]][[selected_sex]][[selected_feature]])  # Ensure data exists for rendering
+    
+    growth_df = growth_data[[selected_chart]][[selected_sex]][[selected_feature]]
+    
+    # Set the age limits from the slider
+    age_range = input$age
+    growth_df_filtered = growth_df[growth_df$Age / 12 >= age_range[1] &
+                                     growth_df$Age / 12 <= age_range[2], ]
+    
+    # Check if filtered data is not empty
+    req(nrow(growth_df_filtered) > 0)
+    
+    # Prepare to plot growth curves with ggplot2
+    p = ggplot() +
+      xlim(min(age_range), max(age_range)) +
+      labs(x="Age (years)", y=selected_feature) +
+      theme_bw()
+    
+    # Add percentile lines to the plot
+    for (i in seq_along(percentiles)) {
+      p = p + geom_line(data=growth_df_filtered,
+                        aes_string(x = "Age / 12",
+                                   y=sprintf("M * (1 + S * qnorm(%f))", percentiles[i])),
+                        color=I(colors_percentiles[i]))
     }
     
-    # Reshape data for plotting
-    growth_curves_long <- melt(growth_curves, id.vars = "Age", variable.name = "Percentile", value.name = "Value")
-    
-    # Create the base plot
-    p <- ggplot(growth_curves_long, aes(x = Age, y = Value, color = Percentile)) +
-      geom_line(size = 1) +
-      labs(title = paste("Growth Curves for", input$chart, "-", input$sex, "-", input$feature),
-           x = "Age (Years)", y = input$feature) +
-      scale_color_manual(values = percentile_colors) +  # Keep percentile colors distinct
-      xlim(input$age[1], input$age[2]) +  # Set x-axis limits based on age slider (in years)
-      theme_minimal()
-    
-    # If people are selected, read measurement data and add to the plot
-    if (!is.null(input$people) && length(input$people) > 0) {
-      general_data <- read_excel(input$file$datapath, sheet = "General")  # Read the "General" sheet again
-      measurement_data_list <- lapply(input$people, function(person) {
-        # Read each person's measurement sheet
-        person_data <- read_excel(input$file$datapath, sheet = person)
+    # If people are selected, plot their data points on the same graph
+    if (!is.null(input$people)) {
+      people_data = data_input()
+      colors = rainbow(length(input$people))
+      for (i in seq_along(input$people)) {
+        person = input$people[i]
+        person_data = people_data[[person]]
         
-        # Calculate age for each measurement
-        birthday <- general_data$Birthday[general_data$Name == person]
-        person_data$Age <- as.numeric(difftime(person_data$Date, birthday, units = "weeks")) / 4.345 / 12  # Convert weeks to months, then to years
+        # Ensure the person_data is not NULL
+        req(!is.null(person_data))
         
-        # Return the relevant feature data
-        if (input$feature == "BMI") {
-          # Calculate BMI
-          person_data$BMI <- person_data$Weight / (person_data$Height / 100)^2  # Height in meters
-          return(person_data[, c("Age", "BMI")])
+        # If the feature is BMI, calculate BMI from Height and Weight
+        if (selected_feature == "BMI") {
+          person_data$BMI = person_data$Weight / (person_data$Height / 100)^2
+          y_data = person_data$BMI
         } else {
-          return(person_data[, c("Age", input$feature)])
+          y_data = person_data[[selected_feature]]
         }
-      })
-      
-      # Combine measurement data into a single data frame
-      combined_measurement_data <- do.call(rbind, lapply(seq_along(measurement_data_list), function(i) {
-        df <- measurement_data_list[[i]]
-        df$Name <- input$people[i]
-        return(df)
-      }))
-      
-      # Calculate percentiles for the combined measurement data
-      combined_measurement_data$Percentile <- NA
-      for (i in 1:nrow(combined_measurement_data)) {
-        measurement_value <- combined_measurement_data[i, input$feature]
-        age_years <- combined_measurement_data$Age[i]
         
-        # Find the row in the growth curve data corresponding to the measurement's age
-        growth_row <- growth_curves[growth_curves$Age == age_years,]
-        
-        # Only calculate percentile if the growth_row exists
-        if (nrow(growth_row) > 0) {
-          for (j in seq_along(z_scores)) {
-            # Get the growth value for the specific percentile
-            growth_value <- growth_row[[paste0("P", percentiles[j] * 100)]]
-            combined_measurement_data$Percentile[i] <- sum(measurement_value > growth_value) / length(growth_row) * 100
-          }
+        # Combine person data into a dataframe for ggplot
+        person_plot_data = data.frame(Age=person_data$Age, Value=y_data)
+       
+        # Calculate percentiles
+        calc_perc = function(df) {
+          # index of closest data row in standards
+          df$idx = sapply(df$Age*12, function(x)
+            which.min(abs(growth_df_filtered$Age - x)))
+          df %>%
+            mutate(L=growth_df_filtered$L[idx],
+                   M=growth_df_filtered$M[idx],
+                   S=growth_df_filtered$S[idx]) %>%
+            mutate(zscore=(((Value / M)^L) - 1) / (S * L),
+                   percentile=pnorm(zscore) * 100)
         }
+        person_plot_data = calc_perc(person_plot_data)
+        
+        # Plot points and lines for each person
+        p = p + geom_point(data = person_plot_data, aes(x=Age, y=Value), color=colors[i]) +
+          geom_line(data=person_plot_data, aes(x=Age, y=Value), color=colors[i], lwd=1) +
+          geom_text(data=person_plot_data, aes(x=Age, y=Value, label=sprintf("%.2f%%", percentile)),
+                    color=colors[i], vjust=-0.5)
       }
-      
-      # Add points and lines for measurements
-      p <- p + geom_point(data = combined_measurement_data, aes(x = Age, y = get(input$feature), color = Name), size = 2) +
-        geom_line(data = combined_measurement_data, aes(x = Age, y = get(input$feature), color = Name), linetype = "dashed") +
-        scale_color_manual(values = c(percentile_colors, colors()))  # Keep percentile colors and add person colors
-      
-      # Annotate percentiles above each measurement point
-      p <- p + geom_text(data = combined_measurement_data,
-                         aes(x = Age, y = get(input$feature), 
-                             label = paste0(round(Percentile, 2), "%")),
-                         vjust = -1, size = 3, color = "black")
     }
-    
-    # Print the final plot
     print(p)
   })
 }
 
-# Run the application
-shinyApp(ui = ui, server = server)
+#============================================================================
+# run app
+#============================================================================
+shinyApp(ui=ui, server=server)
